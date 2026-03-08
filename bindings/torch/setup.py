@@ -45,7 +45,7 @@ if torch.cuda.is_available():
 	compute_capability = major * 10 + minor
 
 	nvcc_flags = [
-		"-std=c++14",
+		"-std=c++17",
 		"--extended-lambda",
 		"--expt-relaxed-constexpr",
 		# The following definitions must be undefined
@@ -57,14 +57,14 @@ if torch.cuda.is_available():
 		f"-gencode=arch=compute_{compute_capability},code=sm_{compute_capability}",
 	]
 	if os.name == "posix":
-		cflags = ["-std=c++14"]
+		cflags = ["-std=c++17"]
 		nvcc_flags += [
 			"-Xcompiler=-mf16c",
 			"-Xcompiler=-Wno-float-conversion",
 			"-Xcompiler=-fno-strict-aliasing",
 		]
 	elif os.name == "nt":
-		cflags = ["/std:c++14"]
+		cflags = ["/std:c++17"]
 
 	print(f"Targeting compute capability {compute_capability}")
 
