@@ -19,7 +19,21 @@ print(f"Building PyTorch extension for tiny-cuda-nn version {VERSION}")
 
 ext_modules = []
 
-if torch.cuda.is_available():
+# Prefer the explicit TCNN_CUDA_ARCHITECTURES environment variable (required
+# for cross-compiling on machines with no GPU attached, e.g. Docker builders),
+# falling back to auto-detecting the installed GPU via PyTorch.
+env_archs = os.environ.get("TCNN_CUDA_ARCHITECTURES", "").strip()
+if env_archs:
+	compute_capabilities = [int(x) for x in env_archs.replace(";", ",").split(",") if x]
+	print(f"Obtained compute capabilities {compute_capabilities} from environment variable TCNN_CUDA_ARCHITECTURES")
+elif torch.cuda.is_available():
+	major, minor = torch.cuda.get_device_capability()
+	compute_capabilities = [major * 10 + minor]
+	print(f"Obtained compute capability {compute_capabilities[0]} from PyTorch")
+else:
+	compute_capabilities = None
+
+if compute_capabilities:
 	include_networks = True
 	if "--no-networks" in sys.argv:
 		include_networks = False
@@ -34,28 +48,27 @@ if torch.cuda.is_available():
 				if paths:
 					return paths[0]
 
-		# If cl.exe is not on path, try to find it.
 		if os.system("where cl.exe >nul 2>nul") != 0:
 			cl_path = find_cl_path()
 			if cl_path is None:
 				raise RuntimeError("Could not locate a supported Microsoft Visual C++ installation")
 			os.environ["PATH"] += ";" + cl_path
 
-	major, minor = torch.cuda.get_device_capability()
-	compute_capability = major * 10 + minor
+	min_compute_capability = min(compute_capabilities)
 
 	nvcc_flags = [
 		"-std=c++17",
 		"--extended-lambda",
 		"--expt-relaxed-constexpr",
-		# The following definitions must be undefined
-		# since TCNN requires half-precision operation.
 		"-U__CUDA_NO_HALF_OPERATORS__",
 		"-U__CUDA_NO_HALF_CONVERSIONS__",
 		"-U__CUDA_NO_HALF2_OPERATORS__",
-		f"-gencode=arch=compute_{compute_capability},code=compute_{compute_capability}",
-		f"-gencode=arch=compute_{compute_capability},code=sm_{compute_capability}",
 	]
+	for cc in compute_capabilities:
+		nvcc_flags += [
+			f"-gencode=arch=compute_{cc},code=compute_{cc}",
+			f"-gencode=arch=compute_{cc},code=sm_{cc}",
+		]
 	if os.name == "posix":
 		cflags = ["-std=c++17"]
 		nvcc_flags += [
@@ -66,16 +79,15 @@ if torch.cuda.is_available():
 	elif os.name == "nt":
 		cflags = ["/std:c++17"]
 
-	print(f"Targeting compute capability {compute_capability}")
+	print(f"Targeting compute capabilities {compute_capabilities}")
 
-	definitions = [f"-DTCNN_MIN_GPU_ARCH={compute_capability}"]
+	definitions = [f"-DTCNN_MIN_GPU_ARCH={min_compute_capability}"]
 	nvcc_flags += definitions
 	cflags += definitions
 
-	# Some containers set this to contain old architectures that won't compile. We only need the one installed in the machine.
+	# Some containers set this to contain old architectures that won't compile. We only need the ones we're targeting.
 	os.environ["TORCH_CUDA_ARCH_LIST"] = ""
 
-	# List of sources.
 	bindings_dir = os.path.dirname(__file__)
 	root_dir = os.path.abspath(os.path.join(bindings_dir, "../.."))
 	source_files = [
@@ -92,7 +104,7 @@ if torch.cuda.is_available():
 			"../../src/cutlass_mlp.cu",
 		]
 
-		if compute_capability >= 70:
+		if min_compute_capability >= 70:
 			source_files.append("../../src/fully_fused_mlp.cu")
 	else:
 		nvcc_flags.append("-DTCNN_NO_NETWORKS")
@@ -112,7 +124,10 @@ if torch.cuda.is_available():
 	)
 	ext_modules = [ext]
 else:
-	raise EnvironmentError("PyTorch CUDA is unavailable. tinycudann requires PyTorch to be installed with the CUDA backend.")
+	raise EnvironmentError(
+		"Unknown compute capability. Specify the target compute capabilities in the "
+		"TCNN_CUDA_ARCHITECTURES environment variable or install PyTorch with the CUDA backend to detect it automatically."
+	)
 
 setup(
 	name="tinycudann",
